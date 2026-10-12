@@ -1,0 +1,16 @@
+[package]
+name = "tuner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dioxus = { version = "0.7.10", default-features = false, features = ["minimal", "document", "web"] }
+serde = { version = "1", features = ["derive"] }
+# Dioxus web history uses Location without enabling its web-sys feature.
+web-sys = { version = "0.3", features = ["Location"] }
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1
+panic = "abort"

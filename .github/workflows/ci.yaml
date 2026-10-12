@@ -1,0 +1,84 @@
+name: Test and publish tuner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tuner-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: cargo clippy --locked --target wasm32-unknown-unknown -- -D warnings
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/audio.test.mjs
+      - uses: jetli/trunk-action@v0.5.0
+        with:
+          version: v0.21.14
+      - run: trunk build --release --locked
+        env:
+          NO_COLOR: 'true'
+      - name: Check production container
+        run: |
+          docker build -t tuner:test .
+          docker run -d --name tuner-test -p 127.0.0.1:8080:80 tuner:test
+          trap 'docker logs tuner-test; docker rm -f tuner-test' EXIT
+          curl --fail --retry 20 --retry-all-errors --retry-delay 1 --max-time 3 http://127.0.0.1:8080/healthz
+          curl --fail http://127.0.0.1:8080/ | grep -q 'tuner.murray.kiwi'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tuner
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  push_to_registry:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: tuner
+          path: dist
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          tags: |
+            ghcr.io/${{ github.repository }}/tuner:latest
+            ghcr.io/${{ github.repository }}/tuner:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
